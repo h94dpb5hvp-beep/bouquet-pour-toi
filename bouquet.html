@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta property="og:title" content="Pour toi ♥" />
+  <meta property="og:description" content="Un petit bouquet 3D rien que pour toi — touche l'écran !" />
+  <title>Pour toi ♥</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #0a0a0e;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      touch-action: manipulation;
+      font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, Monaco, Consolas, "Courier New", monospace;
+    }
+    canvas {
+      display: block;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const FPS = 24;
+    const SPIN_SPEED = 0.6;
+    const TILT = 0.30;
+    const CAM_DIST = 4.0;
+    const MESSAGE = "♥ I love you ♥";
+    const HINT = "ton petit coeur de beurre";
+    const NUM_HEARTS = 18;
+
+    const WHITE = [244, 248, 251, 254, 255, 231];
+    const PINK = [125, 162, 168, 205, 211, 218, 225];
+    const RED = [52, 88, 124, 160, 196, 203];
+    const PURPLE = [54, 91, 97, 134, 140, 183];
+    const YELLOW = [136, 178, 214, 220, 226, 229];
+    const ORANGE = [130, 166, 202, 208, 214, 216];
+    const GOLD_CENTER = [94, 136, 178, 214, 220];
+    const DARK_CENTER = [52, 58, 94, 130, 136];
+    const GREENS = [22, 28, 28, 34, 35, 71, 77, 114];
+    const PAPER = [101, 144, 187, 223, 230, 231];
+    const RIBBON = [88, 125, 161, 197, 204, 211];
+    const HEART_COLORS = [161, 197, 204, 205, 211, 218];
+    const SPARK_COLORS = [231, 225, 218, 220, 229, 255];
+    const MSG_COLORS = [161, 168, 205, 211, 218, 225, 218, 211, 205, 168];
+
+    const SHADE = ".:-=+*%@";
+    const PETAL_SHADE = "+*#%";
+    const PIVOT_Y = 0.2;
+
+    const _L = [-0.45, 0.6, 0.66];
+    const _n = Math.hypot(_L[0], _L[1], _L[2]);
+    const [LX, LY, LZ] = _L.map(v => v / _n);
+
+    const DISC_TYPES = [
+      [WHITE, GOLD_CENTER, 13],
+      [PINK, GOLD_CENTER, 8],
+      [RED, DARK_CENTER, 6],
+      [PURPLE, GOLD_CENTER, 7],
+      [YELLOW, DARK_CENTER, 12],
+      [ORANGE, DARK_CENTER, 9],
+    ];
+    const TULIP_COLORS = [RED, PINK, YELLOW];
+
+    // Table de correspondance ANSI 256 -> CSS RGB
+    const ANSI_PALETTE = (() => {
+      const table = new Array(256);
+      const basic = [
+        "#000000","#800000","#008000","#808000","#000080","#800080","#008080","#c0c0c0",
+        "#808080","#ff0000","#00ff00","#ffff00","#0000ff","#ff00ff","#00ffff","#ffffff"
+      ];
+      for (let i = 0; i < 16; i++) table[i] = basic[i];
+      const steps = [0, 95, 135, 175, 215, 255];
+      for (let i = 16; i < 232; i++) {
+        const idx = i - 16;
+        const r = steps[Math.floor(idx / 36)];
+        const g = steps[Math.floor((idx % 36) / 6)];
+        const b = steps[idx % 6];
+        table[i] = `rgb(${r},${g},${b})`;
+      }
+      for (let i = 232; i < 256; i++) {
+        const v = 8 + (i - 232) * 10;
+        table[i] = `rgb(${v},${v},${v})`;
+      }
+      return table;
+    })();
+
+    function createRng(seed) {
+      let s = seed >>> 0;
+      return {
+        random() {
+          s = (s * 1664525 + 1013904223) >>> 0;
+          return s / 4294967296;
+        },
+        uniform(a, b) {
+          return a + (b - a) * this.random();
+        }
+      };
+    }
+
+    function norm(v) {
+      const m = Math.hypot(v[0], v[1], v[2]) || 1.0;
+      return [v[0] / m, v[1] / m, v[2] / m];
+    }
+
+    function cross(a, b) {
+      return [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0]
+      ];
+    }
+
+    function add(p, d, k) {
+      return [p[0] + d[0] * k, p[1] + d[1] * k, p[2] + d[2] * k];
+    }
+
+    function buildScene() {
+      const rnd = createRng(21);
+      const pts = [];
+      const neck = [0.0, -0.12, 0.0];
+
+      const C = [0.0, 0.12, 0.0];
+      const D = 0.64;
+      const N = 10;
+      const golden = Math.PI * (3 - Math.sqrt(5));
+      const heads = [];
+
+      for (let i = 0; i < N; i++) {
+        const el = (88 - 60 * Math.sqrt(i / (N - 1))) * Math.PI / 180;
+        const az = i * golden;
+        const d = [Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)];
+        const pos = add(C, d, D * rnd.uniform(0.92, 1.05));
+        heads.push([pos, norm(d)]);
+      }
+
+      const tulipSlots = new Set([3, 8]);
+      const flowers = [];
+      let discI = 0;
+
+      for (let idx = 0; idx < heads.length; idx++) {
+        const [pos, axis] = heads[idx];
+        const base = add(pos, axis, -0.03);
+        for (let j = 0; j < 70; j++) {
+          const t = j / 69;
+          const p = [
+            base[0] + (neck[0] - base[0]) * t,
+            base[1] + (neck[1] - base[1]) * t,
+            base[2] + (neck[2] - base[2]) * t
+          ];
+          pts.push([p[0], p[1], p[2], axis[0], 0.0, axis[2], GREENS, -0.15, true, null]);
+        }
+
+        if (tulipSlots.has(idx)) {
+          let nT = 0;
+          for (const k of tulipSlots) if (k < idx) nT++;
+          flowers.push([pos, "tulip", TULIP_COLORS[nT % TULIP_COLORS.length], null, 0, 0.11, rnd.uniform(0, 6.28)]);
+        } else {
+          const [petals, center, nPet] = DISC_TYPES[discI % DISC_TYPES.length];
+          discI++;
+          flowers.push([pos, "disc", petals, center, nPet, rnd.uniform(0.12, 0.14), rnd.uniform(0, 6.28)]);
+        }
+      }
+
+      for (let i = 0; i < 8; i++) {
+        const a = ((i + 0.4) / 8) * 2 * Math.PI;
+        const c = Math.cos(a), s = Math.sin(a);
+        const base = [0.26 * c, 0.30, 0.26 * s];
+        const d = norm([c, 0.15, s]);
+        const side = [-s, 0.0, c];
+        const n = norm(cross(side, d));
+        const L = 0.30, W = 0.07;
+
+        for (let ti = 0; ti < 32; ti++) {
+          const t = ti / 31;
+          for (let wi = -5; wi <= 5; wi++) {
+            const w = wi / 5;
+            const curl = 0.025 * w * w;
+            const p = [
+              base[0] + d[0] * L * t + side[0] * W * Math.sin(Math.PI * t) * w + n[0] * curl,
+              base[1] + d[1] * L * t - 0.10 * t * t + n[1] * curl,
+              base[2] + d[2] * L * t + side[2] * W * Math.sin(Math.PI * t) * w + n[2] * curl
+            ];
+            const rib = wi === 0 ? -0.25 : 0.0;
+            pts.push([p[0], p[1], p[2], n[0], n[1], n[2], GREENS, rib, true, null]);
+          }
+        }
+      }
+
+      const y0 = -0.20, y1 = 0.30, r0 = 0.06, r1 = 0.36;
+      const k = (r1 - r0) / (y1 - y0);
+      const rings = 50;
+      for (let i = 0; i < rings; i++) {
+        const t = i / (rings - 1);
+        const r = r0 + (r1 - r0) * t;
+        const count = Math.max(8, Math.floor(170 * r));
+        for (let j = 0; j < count; j++) {
+          const ph = ((j + rnd.random()) / count) * 2 * Math.PI;
+          const c = Math.cos(ph), s = Math.sin(ph);
+          let y = y0 + (y1 - y0) * t;
+          if (t > 0.9) y += 0.03 * Math.sin(9 * ph);
+          const fold = 0.3 * (Math.abs(Math.sin(5 * ph)) - 0.6);
+          const nn = norm([c, -k, s]);
+          pts.push([r * c, y, r * s, nn[0], nn[1], nn[2], PAPER, fold, false, null]);
+        }
+      }
+
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * 2 * Math.PI;
+        const sx = 0.025 * Math.cos(a), sz = 0.025 * Math.sin(a);
+        for (let j = 0; j < 40; j++) {
+          const t = j / 39;
+          pts.push([
+            sx * (1 + 1.2 * t), -0.20 - 0.30 * t, sz * (1 + 1.2 * t),
+            Math.cos(a), 0.0, Math.sin(a), GREENS, -0.1, true, null
+          ]);
+        }
+      }
+
+      const by = -0.12;
+      const br = r0 + k * (by - y0) + 0.01;
+      for (let j = 0; j < 90; j++) {
+        const ph = (j / 90) * 2 * Math.PI;
+        for (const dy of [-0.012, 0.0, 0.012]) {
+          pts.push([
+            br * Math.cos(ph), by + dy, br * Math.sin(ph),
+            Math.cos(ph), 0.0, Math.sin(ph), RIBBON, 0.0, false, null
+          ]);
+        }
+      }
+
+      const knot = [0.0, by, br + 0.01];
+      for (const side of [-1, 1]) {
+        for (let j = 0; j < 70; j++) {
+          const a = (j / 70) * 2 * Math.PI;
+          const lx = side * (0.07 + 0.07 * Math.cos(a));
+          const ly = 0.04 * Math.sin(a) + 0.02 * (0.07 + 0.07 * Math.cos(a)) / 0.14;
+          for (const fill of [1.0, 0.7]) {
+            pts.push([
+              knot[0] + lx * fill, knot[1] + ly * fill, knot[2] + 0.01,
+              side * 0.3, 0.2, 0.93, RIBBON, 0.1, true, null
+            ]);
+          }
+        }
+        for (let j = 0; j < 30; j++) {
+          const t = j / 29;
+          pts.push([
+            knot[0] + side * 0.06 * t, knot[1] - 0.15 * t, knot[2] + 0.015,
+            side * 0.2, 0.0, 0.98, RIBBON, -0.05 + 0.05 * Math.sin(t * 9), true, null
+          ]);
+        }
+      }
+      for (const dx of [-0.01, 0.0, 0.01]) {
+        pts.push([dx, by, knot[2] + 0.02, 0, 0, 1, RIBBON, 0.2, true, "@"]);
+      }
+
+      const babies = [];
+      for (let i = 0; i < 90; i++) {
+        const a = rnd.random() * 2 * Math.PI;
+        const el = rnd.uniform(0.3, 1.4);
+        const rr = rnd.uniform(0.40, 0.58);
+        babies.push([
+          rr * Math.cos(a) * Math.cos(el),
+          C[1] + rr * Math.sin(el),
+          rr * Math.sin(a) * Math.cos(el),
+          rnd.uniform(0, 6.28)
+        ]);
+      }
+
+      const sparkles = [];
+      for (let i = 0; i < 30; i++) {
+        const a = rnd.random() * 2 * Math.PI;
+        const rr = rnd.uniform(0.75, 0.95);
+        sparkles.push([
+          rr * Math.cos(a),
+          rnd.uniform(-0.3, 1.0),
+          rr * Math.sin(a),
+          rnd.uniform(0, 6.28),
+          rnd.uniform(1.5, 4.0)
+        ]);
+      }
+
+      return { pts, flowers, babies, sparkles };
+    }
+
+    const hearts = [];
+    // Particules interactives (salves de cœurs et d'étincelles au toucher / clic)
+    const bursts = [];
+
+    function updateHearts(dt) {
+      while (hearts.length < NUM_HEARTS) {
+        hearts.push([
+          Math.random(),
+          1.0 + Math.random(),
+          0.03 + Math.random() * 0.05,
+          Math.random() * 6.28,
+          HEART_COLORS[Math.floor(Math.random() * HEART_COLORS.length)]
+        ]);
+      }
+      for (const h of hearts) {
+        h[1] -= h[2] * dt;
+        if (h[1] < 0) {
+          h[0] = Math.random();
+          h[1] = 1.0;
+          h[4] = HEART_COLORS[Math.floor(Math.random() * HEART_COLORS.length)];
+        }
+      }
+
+      // Mise à jour de la pluie / salve de cœurs et d'étincelles interactives
+      for (let i = bursts.length - 1; i >= 0; i--) {
+        const b = bursts[i];
+        b.age += dt;
+        if (b.age >= b.life) {
+          bursts.splice(i, 1);
+          continue;
+        }
+        b.x += b.vx * dt;
+        b.y += b.vy * dt;
+        b.vy += b.ay * dt; // légère gravité douce
+        b.vx *= Math.pow(0.45, dt);
+      }
+    }
+
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const scene = buildScene();
+
+    let cols = 100, rows = 40, cellW = 10, cellH = 18;
+    let offsetX = 0, offsetY = 0;
+    let chars = [], colors = [], zbuf = [];
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      canvas.style.width = w + "px";
+      canvas.style.height = h + "px";
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // Cadrage adaptatif : idéal sur téléphone (portrait) comme sur ordinateur
+      const isMobile = w < 600;
+      const targetCols = isMobile ? 46 : 64;
+      const targetRows = isMobile ? 34 : 34;
+      const fontSize = Math.max(9, Math.min(18, Math.floor(Math.min(w / (targetCols * 0.6), h / (targetRows * 1.15)))));
+
+      ctx.font = `bold ${fontSize}px "Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, Monaco, Consolas, "Courier New", monospace`;
+      ctx.textBaseline = "top";
+
+      cellW = ctx.measureText("M").width;
+      cellH = Math.ceil(fontSize * 1.15);
+      cols = Math.max(28, Math.floor(w / cellW));
+      rows = Math.max(16, Math.floor(h / cellH));
+
+      offsetX = (w - cols * cellW) / 2;
+      offsetY = (h - rows * cellH) / 2;
+
+      chars = Array.from({ length: rows }, () => new Array(cols).fill(" "));
+      colors = Array.from({ length: rows }, () => new Int16Array(cols));
+      zbuf = Array.from({ length: rows }, () => new Float32Array(cols));
+    }
+
+    window.addEventListener("resize", resize);
+    resize();
+
+    // Déclenche une pluie légère de cœurs, étincelles et petits messages "224" et "M+T"
+    function spawnBurstAt(clientX, clientY) {
+      const baseCol = (clientX - offsetX) / cellW;
+      const baseRow = (clientY - offsetY) / cellH;
+
+      // 1. Petite fontaine légère de cœurs et d'étincelles autour du point touché
+      const sparkChars = ["*", "+", "·"];
+      const count = 12;
+      for (let i = 0; i < count; i++) {
+        const isHeart = i % 2 === 0;
+        const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.35;
+        const speed = 5 + Math.random() * 12;
+        bursts.push({
+          x: baseCol + (Math.random() - 0.5) * 1.5,
+          y: baseRow + (Math.random() - 0.5) * 1.2,
+          vx: Math.cos(angle) * speed * 1.3,
+          vy: Math.sin(angle) * speed * 0.7 - 5,
+          ay: 14 + Math.random() * 8,
+          age: 0,
+          life: 1.1 + Math.random() * 0.6,
+          text: isHeart ? "♥" : sparkChars[Math.floor(Math.random() * sparkChars.length)],
+          isTag: false,
+          color: isHeart
+            ? HEART_COLORS[Math.floor(Math.random() * HEART_COLORS.length)]
+            : SPARK_COLORS[Math.floor(Math.random() * SPARK_COLORS.length)],
+          z: 50 + Math.random() * 10
+        });
+      }
+
+      // 2. Quelques gouttes de pluie douce depuis le haut
+      for (let i = 0; i < 6; i++) {
+        const isHeart = i % 2 === 0;
+        bursts.push({
+          x: Math.random() * cols,
+          y: -Math.random() * 3,
+          vx: (Math.random() - 0.5) * 2,
+          vy: 9 + Math.random() * 8,
+          ay: 3,
+          age: 0,
+          life: 1.8 + Math.random() * 0.8,
+          text: isHeart ? "♥" : sparkChars[Math.floor(Math.random() * sparkChars.length)],
+          isTag: false,
+          color: isHeart
+            ? HEART_COLORS[Math.floor(Math.random() * HEART_COLORS.length)]
+            : SPARK_COLORS[Math.floor(Math.random() * SPARK_COLORS.length)],
+          z: 45
+        });
+      }
+
+      // 3. Petits mots visibles "224" et "M+T" qui flottent doucement près du toucher
+      const tags = [
+        { text: "224", offsetCol: -4, offsetRow: -1.5, vx: -1.8, color: 225 },
+        { text: "M+T", offsetCol: 2, offsetRow: -2.2, vx: 1.8, color: 218 }
+      ];
+      for (const tg of tags) {
+        bursts.push({
+          x: Math.max(1, Math.min(cols - tg.text.length - 1, baseCol + tg.offsetCol)),
+          y: Math.max(1, baseRow + tg.offsetRow),
+          vx: tg.vx,
+          vy: -4.5,
+          ay: 3.2,
+          age: 0,
+          life: 2.2,
+          text: tg.text,
+          isTag: true,
+          color: tg.color,
+          z: 80
+        });
+      }
+    }
+
+    // Détection d'une pression brève (tap) sur mobile ou d'un clic sur ordinateur
+    let pointerDownTime = 0;
+    let pointerStartX = 0;
+    let pointerStartY = 0;
+
+    canvas.addEventListener("pointerdown", (e) => {
+      pointerDownTime = performance.now();
+      pointerStartX = e.clientX;
+      pointerStartY = e.clientY;
+    });
+
+    canvas.addEventListener("pointerup", (e) => {
+      const elapsed = performance.now() - pointerDownTime;
+      const dist = Math.hypot(e.clientX - pointerStartX, e.clientY - pointerStartY);
+      // Pression brève (< 350 ms) et sans glissement prolongé (< 25 px)
+      if (elapsed < 350 && dist < 25) {
+        spawnBurstAt(e.clientX, e.clientY);
+      }
+    });
+
+    function render(t) {
+      const { pts, flowers, babies, sparkles } = scene;
+      for (let r = 0; r < rows; r++) {
+        chars[r].fill(" ");
+        colors[r].fill(0);
+        zbuf[r].fill(-1e9);
+      }
+
+      const viewRows = rows - 2;
+      const scale = Math.max(1.0, Math.min((viewRows - 2) / 1.45, (cols - 2) / 2.7));
+      const sxScale = scale * 2.0;
+      const cx = cols / 2;
+      const cy = 1 + 0.78 * scale;
+
+      const ang = t * SPIN_SPEED;
+      const ca = Math.cos(ang), sa = Math.sin(ang);
+      const ct = Math.cos(TILT), st = Math.sin(TILT);
+
+      function plot(col, row, z, ch, color) {
+        if (row >= 0 && row < viewRows && col >= 0 && col < cols && z > zbuf[row][col]) {
+          zbuf[row][col] = z;
+          chars[row][col] = ch;
+          colors[row][col] = color;
+        }
+      }
+
+      // Cœurs flottants en arrière-plan
+      for (const [x, y, , phase, color] of hearts) {
+        const col = ((Math.floor((x + 0.015 * Math.sin(t * 1.2 + phase)) * cols) % cols) + cols) % cols;
+        plot(col, Math.floor(y * viewRows), -50, "♥", color);
+      }
+
+      // Points 3D (tiges, feuilles, papier, ruban)
+      for (let i = 0; i < pts.length; i++) {
+        const [x, y, z, nx, ny, nz, pal, tone, twoSided, override] = pts[i];
+        const xr = x * ca - z * sa;
+        const zr = x * sa + z * ca;
+        const yp = y - PIVOT_Y;
+        const yt = yp * ct - zr * st;
+        const zt = yp * st + zr * ct;
+        const f = CAM_DIST / (CAM_DIST - zt);
+        const col = Math.floor(cx + xr * f * sxScale);
+        const row = Math.floor(cy - yt * f * scale);
+
+        const nxr = nx * ca - nz * sa;
+        const nzr = nx * sa + nz * ca;
+        const nyt = ny * ct - nzr * st;
+        const nzt = ny * st + nzr * ct;
+        let dot = nxr * LX + nyt * LY + nzt * LZ;
+        if (twoSided && dot < 0) dot = -dot * 0.55;
+        let b = 0.25 + 0.75 * Math.max(0.0, dot) + tone;
+        b = Math.min(0.999, Math.max(0.0, b));
+
+        const ch = override === "P"
+          ? PETAL_SHADE[Math.floor(b * PETAL_SHADE.length)]
+          : (override || SHADE[Math.floor(b * SHADE.length)]);
+        plot(col, row, zt, ch, pal[Math.floor(b * pal.length)]);
+      }
+
+      // Fleurs (disques & tulipes)
+      for (let i = 0; i < flowers.length; i++) {
+        const [[x, y, z], kind, pal, cpal, nPet, R, seed] = flowers[i];
+        const xr = x * ca - z * sa;
+        const zr = x * sa + z * ca;
+        const yp = y - PIVOT_Y;
+        const yt = yp * ct - zr * st;
+        const zt = yp * st + zr * ct;
+        const f = CAM_DIST / (CAM_DIST - zt);
+        const fx = cx + xr * f * sxScale;
+        const fy = cy - yt * f * scale;
+
+        const rx = R * f * sxScale;
+        const ry = R * f * scale;
+        const dim = -0.4 * (1 - Math.min(1.0, Math.max(0.0, (zt + 0.6) / 1.2)));
+        const rot = seed + ang * 0.7;
+
+        const rStart = Math.floor(fy - ry) - 1;
+        const rEnd = Math.floor(fy + ry) + 2;
+        const cStart = Math.floor(fx - rx) - 1;
+        const cEnd = Math.floor(fx + rx) + 2;
+
+        for (let row = rStart; row < rEnd; row++) {
+          const dy = (row + 0.5 - fy) / ry;
+          for (let col = cStart; col < cEnd; col++) {
+            const dx = (col + 0.5 - fx) / rx;
+            if (kind === "disc") {
+              const s = Math.hypot(dx, dy);
+              if (s > 1.0) continue;
+              if (s < 0.3) {
+                let b = 0.55 - 0.35 * dx - 0.35 * dy + dim;
+                b = Math.min(0.999, Math.max(0.0, b));
+                plot(col, row, zt + 0.06, s < 0.17 ? "@" : "o", cpal[Math.floor(b * cpal.length)]);
+                continue;
+              }
+              const ph = Math.atan2(dy, dx);
+              const reach = 0.32 + 0.68 * Math.pow(Math.abs(Math.cos(nPet * (ph + rot) / 2)), 0.7);
+              if (s > reach) continue;
+              const edge = s > reach - 0.14 ? -0.22 : 0.0;
+              let b = 0.62 - 0.22 * dx - 0.28 * dy + 0.12 * s + edge + dim;
+              b = Math.min(0.999, Math.max(0.0, b));
+              plot(col, row, zt + 0.04 * (1 - s), PETAL_SHADE[Math.floor(b * PETAL_SHADE.length)], pal[Math.floor(b * pal.length)]);
+            } else {
+              const v = (1 - dy) / 2;
+              if (v < 0 || v > 1) continue;
+              const hw = 0.62 * Math.sin(Math.PI * 0.5 * Math.min(1.0, v * 1.5 + 0.05));
+              if (hw <= 0 || Math.abs(dx) > hw) continue;
+              const xn = dx / hw;
+              if (v > 0.72 + 0.28 * Math.pow(Math.cos(1.5 * Math.PI * xn), 2)) continue;
+              const seam = Math.abs(Math.abs(xn) - 0.33) < 0.12 && v > 0.3 ? -0.25 : 0.0;
+              let b = 0.55 - 0.3 * xn + 0.1 * v + seam + dim;
+              b = Math.min(0.999, Math.max(0.0, b));
+              plot(col, row, zt + 0.03, PETAL_SHADE[Math.floor(b * PETAL_SHADE.length)], pal[Math.floor(b * pal.length)]);
+            }
+          }
+        }
+      }
+
+      // Gypsophiles (petits points blancs)
+      for (let i = 0; i < babies.length; i++) {
+        const [x, y, z, phase] = babies[i];
+        const xr = x * ca - z * sa;
+        const zr = x * sa + z * ca;
+        const yp = y - PIVOT_Y;
+        const yt = yp * ct - zr * st;
+        const zt = yp * st + zr * ct;
+        const f = CAM_DIST / (CAM_DIST - zt);
+        const col = Math.floor(cx + xr * f * sxScale);
+        const row = Math.floor(cy - yt * f * scale);
+        const star = Math.sin(t * 2 + phase) > 0.6;
+        plot(col, row, zt + 0.02, star ? "*" : "·", star ? 231 : 255);
+      }
+
+      // Étincelles
+      for (let i = 0; i < sparkles.length; i++) {
+        const [x, y, z, phase, speed] = sparkles[i];
+        const xr = x * ca - z * sa;
+        const zr = x * sa + z * ca;
+        const yp = y - PIVOT_Y;
+        const yt = yp * ct - zr * st;
+        const zt = yp * st + zr * ct;
+        const f = CAM_DIST / (CAM_DIST - zt);
+        const col = Math.floor(cx + xr * f * sxScale);
+        const row = Math.floor(cy - yt * f * scale);
+        const tw = Math.sin(t * speed + phase);
+        if (tw > 0.85) plot(col, row, zt, "*", 231);
+        else if (tw > 0.4) plot(col, row, zt, "+", 225);
+        else if (tw > 0.0) plot(col, row, zt, "·", 218);
+      }
+
+      // Particules interactives (pluie légère de cœurs/étincelles + "224" et "M+T")
+      for (let i = 0; i < bursts.length; i++) {
+        const b = bursts[i];
+        const col = Math.floor(b.x);
+        const row = Math.floor(b.y);
+        const ratio = b.age / b.life;
+        if (b.isTag) {
+          const color = ratio > 0.75 ? 211 : b.color;
+          for (let k = 0; k < b.text.length; k++) {
+            plot(col + k, row, b.z, b.text[k], color);
+          }
+        } else {
+          let ch = b.text;
+          if (ch !== "♥" && ratio > 0.7) ch = "·";
+          plot(col, row, b.z, ch, b.color);
+        }
+      }
+
+      // Message animé en bas
+      const mrow = rows - 2;
+      const start = Math.max(0, Math.floor((cols - MESSAGE.length) / 2));
+      const shift = Math.floor(t * 6);
+      for (let i = 0; i < MESSAGE.length; i++) {
+        if (start + i < cols) {
+          chars[mrow][start + i] = MESSAGE[i];
+          colors[mrow][start + i] = MSG_COLORS[(i + shift) % MSG_COLORS.length];
+        }
+      }
+
+      const hstart = Math.max(0, Math.floor((cols - HINT.length) / 2));
+      for (let i = 0; i < HINT.length; i++) {
+        if (hstart + i < cols) {
+          chars[rows - 1][hstart + i] = HINT[i];
+          colors[rows - 1][hstart + i] = 244;
+        }
+      }
+
+      // Dessin sur le canvas
+      ctx.fillStyle = "#0a0a0e";
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+      let lastColor = -1;
+      for (let r = 0; r < rows; r++) {
+        const yPos = offsetY + r * cellH;
+        const rc = chars[r];
+        const rcol = colors[r];
+        for (let c = 0; c < cols; c++) {
+          const ch = rc[c];
+          if (ch !== " ") {
+            const colCode = rcol[c];
+            if (colCode !== lastColor) {
+              lastColor = colCode;
+              ctx.fillStyle = ANSI_PALETTE[colCode] || "#ffffff";
+            }
+            ctx.fillText(ch, offsetX + c * cellW, yPos);
+          }
+        }
+      }
+    }
+
+    let startTime = performance.now();
+    let lastTime = startTime;
+    let acc = 0;
+    const step = 1000 / FPS;
+
+    function loop(now) {
+      const dt = (now - lastTime) / 1000;
+      lastTime = now;
+      acc += dt * 1000;
+
+      if (acc >= step) {
+        acc %= step;
+        updateHearts(dt);
+        render((now - startTime) / 1000);
+      }
+      requestAnimationFrame(loop);
+    }
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
